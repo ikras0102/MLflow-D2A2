@@ -1,0 +1,21 @@
+# IDE 配置文件
+.idea/
+.vscode/
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 数据集（千万不要传到 GitHub）
+NYUv2/
+
+# MLflow 日志与实验数据（通常包含模型权重和大文件）
+mlruns/
+result/
+err.log
+
+# 常见的模型权重格式
+*.pth
+*.pt
+*.ckpt
+*.h5
