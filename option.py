@@ -69,6 +69,15 @@ parser.add_argument('--mlflow_run_name', type=str, default=None,
                     help='optional MLflow run name')
 parser.add_argument('--cuda_devices', type=str, default='0,1',
                     help='CUDA_VISIBLE_DEVICES used by mlflow train/test entrypoints')
+parser.add_argument("--lr_gamma", type=float, default=0.5)
+parser.add_argument("--n_trials", type=int, default=10)
+
+parser.add_argument("--log_interval", type=int, default=50)
+
+parser.add_argument("--save_last_checkpoint", action="store_true")
+parser.add_argument("--save_all_epochs", action="store_true")
+parser.add_argument("--save_mlflow_model", action="store_true")
+parser.add_argument("--save_best_checkpoint_artifact", action="store_true", default=True)
 
 args, _unknown_args = parser.parse_known_args()
 # print(args)
