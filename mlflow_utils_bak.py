@@ -1,9 +1,7 @@
 import functools
-import json
 import logging
 import os
 import random
-import subprocess
 import time
 from contextlib import nullcontext
 from datetime import datetime
@@ -15,7 +13,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import yaml
 from tqdm import tqdm
 
 
@@ -52,246 +49,12 @@ def _model_to_log(model):
     return model.module if isinstance(model, nn.DataParallel) else model
 
 
-def _get_arg(args, name, default=None):
-    return getattr(args, name, default)
-
-
-def _str2bool_like(value):
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return value.lower() in ("true", "1", "yes", "y")
-    return bool(value)
-
-
-def _clip_mlflow_value(value, max_length=250):
-    if value is None:
-        return ""
-    value = str(value)
-    if len(value) <= max_length:
-        return value
-    return value[: max_length - 3] + "..."
-
-
-def _log_params_best_effort(params):
-    cleaned = {}
-    for key, value in params.items():
-        if value is None:
-            continue
-        cleaned[key] = _clip_mlflow_value(value)
-    if not cleaned:
-        return
-    try:
-        mlflow.log_params(cleaned)
-    except Exception as exc:
-        logging.getLogger(__name__).warning("skip optional MLflow params: %s", exc)
-
-
-def _run_command(command, cwd=None, timeout=30):
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return None, str(exc)
-    return completed, None
-
-
-def _repo_root():
-    completed, _error = _run_command(["git", "rev-parse", "--show-toplevel"])
-    if completed is not None and completed.returncode == 0:
-        return completed.stdout.strip()
-    return os.getcwd()
-
-
-def _git_value(repo_root, command):
-    completed, error = _run_command(command, cwd=repo_root)
-    if error is not None or completed is None or completed.returncode != 0:
-        return ""
-    return completed.stdout.strip()
-
-
-def _parse_dvc_data_paths(args):
-    paths = []
-    dataset_dir = _get_arg(args, "dataset_dir", None)
-    if dataset_dir:
-        paths.append(dataset_dir)
-
-    raw_paths = _get_arg(args, "dvc_data_paths", None)
-    if raw_paths:
-        for path in raw_paths.split(","):
-            path = path.strip()
-            if path:
-                paths.append(path)
-
-    deduped = []
-    seen = set()
-    for path in paths:
-        normalized = os.path.normpath(path)
-        if normalized not in seen:
-            deduped.append(normalized)
-            seen.add(normalized)
-    return deduped
-
-
-def _iter_dvc_files(repo_root):
-    ignored_dirs = {".git", ".dvc", "mlruns", "result", "__pycache__"}
-    for dirpath, dirnames, filenames in os.walk(repo_root):
-        dirnames[:] = [name for name in dirnames if name not in ignored_dirs]
-        for filename in filenames:
-            if filename.endswith(".dvc"):
-                yield os.path.join(dirpath, filename)
-
-
-def _load_dvc_file(dvc_file):
-    with open(dvc_file, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    return data.get("outs", []) or []
-
-
-def _find_dvc_out(repo_root, data_path):
-    target_abs = os.path.abspath(os.path.join(repo_root, data_path))
-    direct_dvc_file = target_abs + ".dvc"
-    dvc_files = []
-    if os.path.exists(direct_dvc_file):
-        dvc_files.append(direct_dvc_file)
-    dvc_files.extend(
-        path for path in _iter_dvc_files(repo_root) if path not in dvc_files
-    )
-
-    for dvc_file in dvc_files:
-        try:
-            outs = _load_dvc_file(dvc_file)
-        except (OSError, yaml.YAMLError):
-            continue
-
-        dvc_dir = os.path.dirname(dvc_file)
-        for out in outs:
-            out_path = out.get("path")
-            if not out_path:
-                continue
-            out_abs = os.path.abspath(os.path.join(dvc_dir, out_path))
-            if out_abs == target_abs:
-                return dvc_file, out
-    return None, {}
-
-
-def log_dvc_metadata(args, artifact_dir=None):
-    if _str2bool_like(_get_arg(args, "skip_dvc_metadata", False)):
-        return {}
-    if mlflow.active_run() is None:
-        return {}
-
-    repo_root = _repo_root()
-    git_commit = _git_value(repo_root, ["git", "rev-parse", "HEAD"])
-    git_status = _git_value(
-        repo_root, ["git", "status", "--short", "--untracked-files=no"]
-    )
-
-    metadata = {
-        "repo_root": repo_root,
-        "git_commit": git_commit,
-        "git_dirty": bool(git_status),
-        "data": [],
-    }
-
-    completed, dvc_error = _run_command(["dvc", "--version"], cwd=repo_root)
-    dvc_available = completed is not None and completed.returncode == 0
-    metadata["dvc_available"] = dvc_available
-    metadata["dvc_version"] = completed.stdout.strip() if dvc_available else ""
-    metadata["dvc_error"] = "" if dvc_available else dvc_error
-
-    params = {
-        "git_commit": git_commit,
-        "git_dirty": bool(git_status),
-        "dvc_available": dvc_available,
-        "dvc_version": metadata["dvc_version"],
-    }
-
-    data_paths = _parse_dvc_data_paths(args)
-    for idx, data_path in enumerate(data_paths):
-        data_abs = os.path.abspath(os.path.join(repo_root, data_path))
-        dvc_file, out = _find_dvc_out(repo_root, data_path)
-        dvc_file_rel = (
-            os.path.relpath(dvc_file, repo_root) if dvc_file is not None else ""
-        )
-        data_rel = os.path.relpath(data_abs, repo_root)
-        hash_value = out.get("md5") or out.get("etag") or out.get("hash") or ""
-
-        item = {
-            "path": data_rel,
-            "exists": os.path.exists(data_abs),
-            "dvc_file": dvc_file_rel,
-            "hash": hash_value,
-            "size": out.get("size", ""),
-            "nfiles": out.get("nfiles", ""),
-        }
-        metadata["data"].append(item)
-
-        prefix = "dvc_data_%d" % idx
-        params.update(
-            {
-                "%s_path" % prefix: item["path"],
-                "%s_exists" % prefix: item["exists"],
-                "%s_dvc_file" % prefix: item["dvc_file"],
-                "%s_hash" % prefix: item["hash"],
-                "%s_size" % prefix: item["size"],
-                "%s_nfiles" % prefix: item["nfiles"],
-            }
-        )
-
-        if idx == 0:
-            params.update(
-                {
-                    "dvc_dataset_path": item["path"],
-                    "dvc_dataset_dvc_file": item["dvc_file"],
-                    "dvc_dataset_hash": item["hash"],
-                    "dvc_dataset_size": item["size"],
-                    "dvc_dataset_nfiles": item["nfiles"],
-                }
-            )
-
-    if dvc_available and os.path.isdir(os.path.join(repo_root, ".dvc")):
-        completed, status_error = _run_command(
-            ["dvc", "status"], cwd=repo_root, timeout=60
-        )
-        if completed is not None:
-            status_text = completed.stdout.strip() or completed.stderr.strip()
-            metadata["dvc_status_returncode"] = completed.returncode
-            metadata["dvc_status"] = status_text
-            mlflow.set_tag("dvc_status", _clip_mlflow_value(status_text, 500))
-        elif status_error is not None:
-            metadata["dvc_status"] = status_error
-            mlflow.set_tag("dvc_status", _clip_mlflow_value(status_error, 500))
-
-    _log_params_best_effort(params)
-    if git_commit:
-        mlflow.set_tag("git_commit", git_commit)
-
-    if artifact_dir is not None:
-        os.makedirs(artifact_dir, exist_ok=True)
-        metadata_path = os.path.join(artifact_dir, "dvc_metadata.json")
-        with open(metadata_path, "w", encoding="utf-8") as f:
-            json.dump(metadata, f, indent=2, sort_keys=True)
-        mlflow.log_artifact(metadata_path, artifact_path="metadata")
-
-    return metadata
-
-
 def _create_file_logger(name, log_file):
     logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
     log_file = os.path.abspath(log_file)
-
     for handler in logger.handlers:
         if isinstance(handler, logging.FileHandler) and handler.baseFilename == log_file:
             return logger
@@ -314,7 +77,6 @@ def load_state_dict_flexible(model, checkpoint_path, map_location=None):
 
     model_keys = list(model.state_dict().keys())
     checkpoint_keys = list(state_dict.keys())
-
     model_has_module = any(key.startswith("module.") for key in model_keys)
     checkpoint_has_module = any(key.startswith("module.") for key in checkpoint_keys)
 
@@ -342,40 +104,28 @@ class MLFlowTrainer(object):
         self.criterion = criterion
         self.train_loader = train_loader
         self.test_loader = test_loader
-
         self.maxepoch = args.epoch
         self.nowepoch = 0
-
         self.upscale_func = functools.partial(
             F.interpolate, mode="bicubic", align_corners=False
         )
 
-        s = datetime.now().strftime("%Y%m%d%H%M%S_%f")
-        result_root = "%s/%s-x%s-%s" % (
-            args.trainresult,
-            args.model_file,
-            args.scale,
-            s,
-        )
+        s = datetime.now().strftime("%Y%m%d%H%M%S")
+        result_root = "%s/%s-x%s-%s" % (args.trainresult, args.model_file, args.scale, s)
         os.makedirs(result_root, exist_ok=True)
-
         self.result_root = result_root
         self.best_parameter_path = os.path.join(self.result_root, "best_parameter")
         self.last_parameter_path = os.path.join(self.result_root, "last_parameter")
-
         self.logger = _create_file_logger(
-            "d2a2.train.%s" % s,
-            os.path.join(result_root, "train.log"),
+            "d2a2.train.%s" % s, os.path.join(result_root, "train.log")
         )
         self.logger.info("args:\n%s\n" % self.args)
 
     @torch.no_grad()
     def validate(self):
         self.model.eval()
-
         rmse = np.zeros(self.test_loader.__len__())
         t = tqdm(iter(self.test_loader), leave=True, total=self.test_loader.__len__())
-
         for idx, data in enumerate(t):
             guidance = data["guidance"].cuda()
             target = data["target"].cuda()
@@ -383,27 +133,20 @@ class MLFlowTrainer(object):
             min_value = data["min"]
             max_value = data["max"]
             mde = data["mde"].cuda()
-
             out = self.model(guidance, target, mde)
-
             gt_ = gt[0, 0].cpu().numpy()
             out_ = out[0, 0].cpu().numpy()
-
             if self.args.dataset == "nyu":
                 gt_ = gt_[6:-6, 6:-6]
                 out_ = out_[6:-6, 6:-6]
-
             rmse[idx] = calc_rmse(gt_, out_, min_value.numpy(), max_value.numpy())
-
             t.set_description("[validate] rmse: %f" % rmse[:idx + 1].mean())
             t.refresh()
-
         return rmse
 
     def train(self):
         with _mlflow_run_context():
             model_to_log = _model_to_log(self.model)
-
             mlflow.log_params(_sanitize_params(vars(self.args)))
             mlflow.log_params(
                 _sanitize_params(
@@ -418,136 +161,76 @@ class MLFlowTrainer(object):
                     }
                 )
             )
-            log_dvc_metadata(self.args, artifact_dir=self.result_root)
 
             max_epoch = self.maxepoch
-            validate_interval = max(1, _get_arg(self.args, "validate_interval", 5))
-            log_interval = max(1, _get_arg(self.args, "log_interval", 50))
-
-            save_last_checkpoint = _str2bool_like(
-                _get_arg(self.args, "save_last_checkpoint", True)
-            )
-            save_all_epochs = _str2bool_like(
-                _get_arg(self.args, "save_all_epochs", False)
-            )
-            save_mlflow_model = _str2bool_like(
-                _get_arg(self.args, "save_mlflow_model", False)
-            )
-            save_best_checkpoint_artifact = _str2bool_like(
-                _get_arg(self.args, "save_best_checkpoint_artifact", True)
-            )
-
+            validate_interval = max(1, getattr(self.args, "validate_interval", 5))
             best_rmse = float("inf")
             best_epoch = 0
-
-            global_step = 0
 
             for epoch in range(max_epoch):
                 self.nowepoch = epoch + 1
                 self.model.train()
-
                 running_loss = 0.0
                 epoch_loss = 0.0
-
-                t = tqdm(
-                    iter(self.train_loader),
-                    leave=True,
-                    total=self.train_loader.__len__(),
-                )
-
+                t = tqdm(iter(self.train_loader), leave=True, total=self.train_loader.__len__())
                 for idx, data in enumerate(t):
                     self.optimizer.zero_grad()
-
+                    self.scheduler.step()
                     guidance = data["guidance"].cuda()
                     target = data["target"].cuda()
                     gt = data["gt"].cuda()
                     mde = data["mde"].cuda()
-
                     out = self.model(guidance, target, mde)
                     loss = self.criterion(out, gt)
-
                     loss.backward()
                     self.optimizer.step()
-
-                    # StepLR 如果你希望“按 batch 衰减”，放这里。
-                    # 如果你希望“按 epoch 衰减”，可以把这行移到 epoch 结束处。
-                    if self.scheduler is not None:
-                        self.scheduler.step()
-
-                    batch_loss = float(loss.detach().item())
-
+                    batch_loss = loss.data.item()
                     running_loss += batch_loss
                     epoch_loss += batch_loss
-                    global_step += 1
-
-                    if (idx + 1) % log_interval == 0:
-                        avg_running_loss = running_loss / log_interval
-
+                    if idx % 50 == 0:
+                        running_loss /= 50
                         t.set_description(
-                            "[train epoch:%d] loss: %.10f"
-                            % (self.nowepoch, avg_running_loss)
+                            "[train epoch(L1):%d] loss: %.10f"
+                            % (self.nowepoch, running_loss)
                         )
                         t.refresh()
-
                         self.logger.info(
-                            "epoch:%d iter:%d running_loss:%.10f batch_loss:%.10f"
-                            % (self.nowepoch, idx + 1, avg_running_loss, batch_loss)
+                            "epoch:%d running_loss:%.10f"
+                            % (self.nowepoch, running_loss)
                         )
-
                         mlflow.log_metrics(
                             {
-                                "train_running_loss": avg_running_loss,
-                                "train_batch_loss": batch_loss,
+                                "train_running_loss": float(running_loss),
+                                "train_batch_loss": float(batch_loss),
                             },
-                            step=global_step,
+                            step=epoch * self.train_loader.__len__() + idx,
                         )
 
-                        running_loss = 0.0
-
                 epoch_lr = self.optimizer.state_dict()["param_groups"][0]["lr"]
-                epoch_mean_loss = float(epoch_loss / max(1, self.train_loader.__len__()))
-
                 self.logger.info(
-                    "epoch:%d optimizer_lr:%s epoch_loss:%.10f"
-                    % (self.nowepoch, epoch_lr, epoch_mean_loss)
+                    "epoch:%d optimizer_lr:%s" % (self.nowepoch, epoch_lr)
                 )
-
                 mlflow.log_metrics(
                     {
-                        "train_epoch_loss": epoch_mean_loss,
+                        "train_epoch_loss": float(epoch_loss / self.train_loader.__len__()),
                         "optimizer_lr": float(epoch_lr),
                     },
                     step=self.nowepoch,
                 )
+                torch.save(self.model.state_dict(), self.last_parameter_path)
 
-                if save_last_checkpoint:
-                    torch.save(self.model.state_dict(), self.last_parameter_path)
-
-                should_validate = (
-                    (epoch % validate_interval == 0)
-                    or (epoch == max_epoch - 1)
-                )
-
-                if should_validate:
+                if epoch % validate_interval == 0:
                     rmse = self.validate()
                     mean_rmse = float(rmse.mean())
-
                     self.logger.info(
-                        "epoch:%d --------mean_rmse:%.10f"
+                        "epoch:%d --------mean_rmse:%.10f "
                         % (self.nowepoch, mean_rmse)
                     )
-
-                    mlflow.log_metrics(
-                        {"val_mean_rmse": mean_rmse},
-                        step=self.nowepoch,
-                    )
-
+                    mlflow.log_metrics({"val_mean_rmse": mean_rmse}, step=self.nowepoch)
                     if mean_rmse < best_rmse:
                         best_rmse = mean_rmse
                         best_epoch = self.nowepoch
-
                         torch.save(self.model.state_dict(), self.best_parameter_path)
-
                         mlflow.log_metrics(
                             {
                                 "best_mean_rmse": float(best_rmse),
@@ -555,44 +238,30 @@ class MLFlowTrainer(object):
                             },
                             step=self.nowepoch,
                         )
-
-                        if save_best_checkpoint_artifact:
-                            mlflow.log_artifact(
-                                self.best_parameter_path,
-                                artifact_path="checkpoints",
-                            )
-
+                        mlflow.log_artifact(
+                            self.best_parameter_path, artifact_path="checkpoints"
+                        )
                     self.logger.info(
-                        "best_epoch:%d --------best_mean_rmse:%.10f"
+                        "best_epoch:%d --------best_mean_rmse:%.10f "
                         % (best_epoch, best_rmse)
                     )
 
-                if save_all_epochs and epoch >= max_epoch - 5:
+                if epoch >= max_epoch - 5:
                     torch.save(
                         self.model.state_dict(),
                         "%s/%s_parameter" % (self.result_root, epoch),
                     )
 
-            if save_mlflow_model:
-                mlflow.pytorch.log_model(_model_to_log(self.model), "model")
-
+            mlflow.pytorch.log_model(_model_to_log(self.model), "model")
             if os.path.exists(self.best_parameter_path):
                 load_state_dict_flexible(self.model, self.best_parameter_path)
-
-                if save_mlflow_model:
-                    mlflow.pytorch.log_model(_model_to_log(self.model), "best_model")
-
+                mlflow.pytorch.log_model(_model_to_log(self.model), "best_model")
                 self.logger.info("loaded best_parameter for downstream test")
-
-            if save_last_checkpoint and os.path.exists(self.last_parameter_path):
-                mlflow.log_artifact(
-                    self.last_parameter_path,
-                    artifact_path="checkpoints",
-                )
-
-            train_log_path = os.path.join(self.result_root, "train.log")
-            if os.path.exists(train_log_path):
-                mlflow.log_artifact(train_log_path, artifact_path="logs")
+            if os.path.exists(self.last_parameter_path):
+                mlflow.log_artifact(self.last_parameter_path, artifact_path="checkpoints")
+            mlflow.log_artifact(
+                os.path.join(self.result_root, "train.log"), artifact_path="logs"
+            )
 
             return {
                 "best_rmse": None if best_epoch == 0 else float(best_rmse),
@@ -613,7 +282,7 @@ class Tester(object):
         self.model = model
         self.test_loader = test_loader
 
-        s = datetime.now().strftime("%Y%m%d%H%M%S_%f")
+        s = datetime.now().strftime("%Y%m%d%H%M%S")
         result_root = "%s/%s-%s-x%s-%s" % (
             args.testresult,
             args.model_file,
@@ -622,21 +291,16 @@ class Tester(object):
             s,
         )
         os.makedirs(result_root, exist_ok=True)
-
         if self.args.save:
             save_depth_root = result_root + "/depthsr"
             save_hotmap_root = result_root + "/hotmap"
-
             os.makedirs(save_depth_root, exist_ok=True)
             os.makedirs(save_hotmap_root, exist_ok=True)
-
             self.save_depth_root = save_depth_root
             self.save_hotmap_root = save_hotmap_root
-
         self.result_root = result_root
         self.logger = _create_file_logger(
-            "d2a2.test.%s" % s,
-            os.path.join(result_root, "test.log"),
+            "d2a2.test.%s" % s, os.path.join(result_root, "test.log")
         )
 
     @torch.no_grad()
@@ -648,14 +312,10 @@ class Tester(object):
         mlflow_artifact_path=None,
     ):
         self.model.eval()
-
         rmse = np.zeros(self.test_loader.__len__())
-
         global total_time
         total_time = 0.0
-
         t = tqdm(iter(self.test_loader), leave=True, total=self.test_loader.__len__())
-
         for idx, data in enumerate(t):
             guidance = data["guidance"].cuda()
             target = data["target"].cuda()
@@ -663,33 +323,24 @@ class Tester(object):
             min_value = data["min"]
             max_value = data["max"]
             mde = data["mde"].cuda()
-
             begin_time = time.time()
             out = self.model(guidance, target, mde)
             end_time = time.time()
-
             total_time = total_time + (end_time - begin_time)
-
             errormap = torch.abs(gt - out)
-
             gt_ = gt[0, 0].cpu().numpy()
             out_ = out[0, 0].cpu().numpy()
-
             if self.args.dataset == "nyu":
                 gt_ = gt_[6:-6, 6:-6]
                 out_ = out_[6:-6, 6:-6]
-
             rmse[idx] = calc_rmse(gt_, out_, min_value.numpy(), max_value.numpy())
-
             if self.args.save:
                 out_depth = (
-                    out[0][0].cpu().numpy()
-                    * (max_value.numpy() - min_value.numpy())
+                    out[0][0].cpu().numpy() * (max_value.numpy() - min_value.numpy())
                     + min_value.numpy()
                 )
                 gt_depth = (
-                    gt[0][0].cpu().numpy()
-                    * (max_value.numpy() - min_value.numpy())
+                    gt[0][0].cpu().numpy() * (max_value.numpy() - min_value.numpy())
                     + min_value.numpy()
                 )
                 lr_depth = (
@@ -702,7 +353,6 @@ class Tester(object):
                     * (max_value.numpy() - min_value.numpy())
                     + min_value.numpy()
                 )
-
                 plt.imsave(
                     os.path.join(self.save_hotmap_root, "%s_sr_color.png" % idx),
                     out_depth,
@@ -723,21 +373,17 @@ class Tester(object):
                     lr_depth,
                     cmap="plasma",
                 )
-
             t.set_description("[validate] rmse: %f" % rmse[:idx + 1].mean())
             t.refresh()
-
             self.logger.info("idx:%d rmse:%.10f" % (idx, rmse[idx]))
 
         mean_rmse = float(rmse.mean())
         avg_time = float(total_time / max(1, self.test_loader.__len__()))
-
         self.logger.info("mean rmse:%.10f\n\n\n" % mean_rmse)
         self.logger.info("total_time:%.10f" % total_time)
 
         if log_mlflow and mlflow.active_run() is not None:
             prefix = mlflow_prefix or "test"
-
             mlflow.log_metrics(
                 {
                     "%s_mean_rmse" % prefix: mean_rmse,
@@ -746,7 +392,6 @@ class Tester(object):
                 },
                 step=mlflow_step,
             )
-
             mlflow.log_params(
                 _sanitize_params(
                     {
@@ -755,7 +400,6 @@ class Tester(object):
                     }
                 )
             )
-
             artifact_path = mlflow_artifact_path or prefix
             mlflow.log_artifacts(self.result_root, artifact_path=artifact_path)
 

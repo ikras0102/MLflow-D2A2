@@ -28,10 +28,11 @@ dependencies:
     - cycler==0.11.0
     - dcn==1.0
     - docker-pycreds==0.4.0
+    - dvc==2.10.2
     - einops==0.6.1
     - filelock==3.12.2
     - fonttools==4.38.0
-    - fsspec==2023.1.0
+    - fsspec==2022.2.0
     - gitdb==4.0.11
     - gitpython==3.1.43
     - huggingface-hub==0.16.4
@@ -79,4 +80,3 @@ dependencies:
     - modelscope==1.8.4
     - optuna==3.0.0
 prefix: /home/zyl/anaconda3/envs/d2a2_3
-

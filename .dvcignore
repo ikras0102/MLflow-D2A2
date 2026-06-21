@@ -1,0 +1,6 @@
+# Keep generated training outputs out of DVC scans.
+mlruns/
+result/
+__pycache__/
+*.pyc
+

@@ -190,6 +190,48 @@ model(guidance, target, mde)
 
 这也是后续的一个**修复方向**。
 
+修复：引入脚本`mlflow_transform2pyfunc_model.py`
+
+这个脚本load一个模型然后包装成pyfunc，运行后会输出一个新的RUN_ID，如1d0b79e73e70467f8e02fd6a1a98ff6d
+
+• 我测通了。关键点是：NYU 要用 datasets/NYUv2，不是根目录下的 NYUv2。我抽查发现 NYUv2/Depth/*.npy 是坏的，np.load 会报 cannot reshape
+  array...；而 datasets/NYUv2 正常。
+
+  我加了一个复用脚本：test_d2a2_pyfunc_nyu.py，它会从 NYU 样本生成 pyfunc 需要的三个 .pt 输入，然后直接
+  mlflow.pyfunc.load_model(...).predict(...)。
+
+  本地 pyfunc 测试命令：
+
+  /root/miniconda3/envs/d2a2/bin/python test_d2a2_pyfunc_nyu.py \
+    --dataset-dir datasets/NYUv2 \
+    --model-uri mlruns/3/1d0b79e73e70467f8e02fd6a1a98ff6d/artifacts/best_model_pyfunc \
+    --input-dir /tmp/d2a2_pyfunc_nyu_sample \
+    --write-request-json
+
+  我这里跑出来成功：
+
+  guidance: shape=(3, 480, 640)
+  target_lr_depth: shape=(1, 30, 40)
+  mde: shape=(1, 480, 640)
+  prediction: shape=(1, 1, 480, 640), min=-0.040676, max=0.983403, mean=0.580838
+
+  REST 也测通了。启动服务：
+
+  MLFLOW_TRACKING_URI=file:///root/autodl-tmp/.autodl/D2A2-master1/mlruns \
+  /root/miniconda3/envs/d2a2/bin/mlflow models serve \
+    -m /root/autodl-tmp/.autodl/D2A2-master1/mlruns/3/1d0b79e73e70467f8e02fd6a1a98ff6d/artifacts/best_model_pyfunc \
+    --env-manager local \
+    -h 127.0.0.1 -p 5002 -w 1 -t 180
+
+  请求：
+
+  curl -X POST http://127.0.0.1:5002/invocations \
+    -H 'Content-Type: application/json' \
+    --data-binary @/tmp/d2a2_pyfunc_nyu_sample/invocation.json \
+    -o /tmp/d2a2_pyfunc_response.json
+
+  结果是 HTTP_STATUS=200，响应解析后维度也是 (1, 1, 480, 640)。我已经把测试用的 MLflow 服务停掉了。
+
 ## 后续 MLOps 实践方向
 
 ### 1. 数据版本控制

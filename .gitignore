@@ -19,3 +19,4 @@ err.log
 *.pt
 *.ckpt
 *.h5
+/NYUv2

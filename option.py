@@ -13,7 +13,7 @@ parser.add_argument('--scale', type=int, default=16,##4 | 8 | 16
                     help='scale factor')
 parser.add_argument('--dataset', type=str, default='nyu',
                     help='dataset nyu, middlebury, lu or rgbdd')  
-parser.add_argument('--dataset_dir', type=str, default='NYUv2',#Lu | Middlebury | RGBDD | NYUv2
+parser.add_argument('--dataset_dir', type=str, default='datasets/NYUv2',#Lu | Middlebury | RGBDD | NYUv2
                     help='dataset root dir')
 parser.add_argument('--pretrain_path', type=str, default=None,
                     help='load pretrained model parameters')
@@ -69,6 +69,29 @@ parser.add_argument('--mlflow_run_name', type=str, default=None,
                     help='optional MLflow run name')
 parser.add_argument('--cuda_devices', type=str, default='0,1',
                     help='CUDA_VISIBLE_DEVICES used by mlflow train/test entrypoints')
+parser.add_argument("--lr_gamma", type=float, default=0.5)
+parser.add_argument("--n_trials", type=int, default=10)
+
+parser.add_argument("--log_interval", type=int, default=50)
+
+parser.add_argument("--save_last_checkpoint", action="store_true")
+parser.add_argument("--save_all_epochs", action="store_true")
+parser.add_argument("--save_mlflow_model", action="store_true")
+parser.add_argument("--save_best_checkpoint_artifact", action="store_true", default=True)
+
+# DVC metadata setting
+parser.add_argument("--dvc_pull", action="store_true",
+                    help="run dvc pull before building dataloaders")
+parser.add_argument("--dvc_required", action="store_true",
+                    help="fail early when DVC is unavailable or data paths are not present")
+parser.add_argument("--dvc_remote", type=str, default=None,
+                    help="optional DVC remote name used by dvc pull")
+parser.add_argument("--dvc_jobs", type=int, default=None,
+                    help="optional parallel jobs passed to dvc pull")
+parser.add_argument("--dvc_data_paths", type=str, default=None,
+                    help="optional comma-separated extra DVC-tracked data paths to log to MLflow")
+parser.add_argument("--skip_dvc_metadata", action="store_true",
+                    help="skip logging Git/DVC data version metadata to MLflow")
 
 args, _unknown_args = parser.parse_known_args()
 # print(args)

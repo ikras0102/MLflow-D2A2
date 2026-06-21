@@ -1,0 +1,61 @@
+nohup: ignoring input
+running: dvc status
+Data and pipelines are up to date.
+
+[32m[I 2026-06-06 19:41:22,848][0m A new study created in memory with name: d2a2_dvc_hpo[0m
+  0%|          | 0/125 [00:00<?, ?it/s]/root/miniconda3/envs/d2a2/lib/python3.7/site-packages/torch/nn/functional.py:3455: UserWarning: Default upsampling behavior when mode=bicubic is changed to align_corners=False since 0.4.0. Please specify align_corners=True if the old behavior is desired. See the documentation of nn.Upsample for details.
+  "See the documentation of nn.Upsample for details.".format(mode)
+  1%|          | 1/125 [00:02<04:08,  2.00s/it]  2%|▏         | 2/125 [00:03<03:07,  1.53s/it]  2%|▏         | 3/125 [00:04<02:46,  1.37s/it]  3%|▎         | 4/125 [00:05<02:34,  1.28s/it]  4%|▍         | 5/125 [00:06<02:27,  1.23s/it]  5%|▍         | 6/125 [00:07<02:22,  1.20s/it]  6%|▌         | 7/125 [00:08<02:19,  1.18s/it]  6%|▌         | 7/125 [00:10<02:49,  1.44s/it]
+[33m[W 2026-06-06 19:41:39,367][0m Trial 0 failed because of the following error: KeyboardInterrupt()[0m
+Traceback (most recent call last):
+  File "/root/miniconda3/envs/d2a2/lib/python3.7/site-packages/optuna/study/_optimize.py", line 196, in _run_trial
+    value_or_values = func(trial)
+  File "/root/autodl-tmp/.autodl/D2A2-master1/train_test_d2a2_mlflow_optuna.py", line 255, in objective
+    score = run_train_and_test(trial)
+  File "/root/autodl-tmp/.autodl/D2A2-master1/train_test_d2a2_mlflow_optuna.py", line 193, in run_train_and_test
+    train_summary = trainer.train()
+  File "/root/autodl-tmp/.autodl/D2A2-master1/mlflow_utils.py", line 470, in train
+    self.optimizer.step()
+  File "/root/miniconda3/envs/d2a2/lib/python3.7/site-packages/torch/optim/lr_scheduler.py", line 65, in wrapper
+    return wrapped(*args, **kwargs)
+  File "/root/miniconda3/envs/d2a2/lib/python3.7/site-packages/torch/optim/optimizer.py", line 89, in wrapper
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/d2a2/lib/python3.7/site-packages/torch/autograd/grad_mode.py", line 27, in decorate_context
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/d2a2/lib/python3.7/site-packages/torch/optim/adam.py", line 119, in step
+    group['eps'])
+  File "/root/miniconda3/envs/d2a2/lib/python3.7/site-packages/torch/optim/_functional.py", line 84, in adam
+    exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+KeyboardInterrupt
+Traceback (most recent call last):
+  File "train_test_d2a2_mlflow_optuna_dvc.py", line 50, in <module>
+    main()
+  File "train_test_d2a2_mlflow_optuna_dvc.py", line 30, in main
+    n_trials=getattr(args, "n_trials", 10),
+  File "/root/miniconda3/envs/d2a2/lib/python3.7/site-packages/optuna/study/study.py", line 428, in optimize
+    show_progress_bar=show_progress_bar,
+  File "/root/miniconda3/envs/d2a2/lib/python3.7/site-packages/optuna/study/_optimize.py", line 76, in _optimize
+    progress_bar=progress_bar,
+  File "/root/miniconda3/envs/d2a2/lib/python3.7/site-packages/optuna/study/_optimize.py", line 160, in _optimize_sequential
+    frozen_trial = _run_trial(study, func, catch)
+  File "/root/miniconda3/envs/d2a2/lib/python3.7/site-packages/optuna/study/_optimize.py", line 234, in _run_trial
+    raise func_err
+  File "/root/miniconda3/envs/d2a2/lib/python3.7/site-packages/optuna/study/_optimize.py", line 196, in _run_trial
+    value_or_values = func(trial)
+  File "/root/autodl-tmp/.autodl/D2A2-master1/train_test_d2a2_mlflow_optuna.py", line 255, in objective
+    score = run_train_and_test(trial)
+  File "/root/autodl-tmp/.autodl/D2A2-master1/train_test_d2a2_mlflow_optuna.py", line 193, in run_train_and_test
+    train_summary = trainer.train()
+  File "/root/autodl-tmp/.autodl/D2A2-master1/mlflow_utils.py", line 470, in train
+    self.optimizer.step()
+  File "/root/miniconda3/envs/d2a2/lib/python3.7/site-packages/torch/optim/lr_scheduler.py", line 65, in wrapper
+    return wrapped(*args, **kwargs)
+  File "/root/miniconda3/envs/d2a2/lib/python3.7/site-packages/torch/optim/optimizer.py", line 89, in wrapper
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/d2a2/lib/python3.7/site-packages/torch/autograd/grad_mode.py", line 27, in decorate_context
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/d2a2/lib/python3.7/site-packages/torch/optim/adam.py", line 119, in step
+    group['eps'])
+  File "/root/miniconda3/envs/d2a2/lib/python3.7/site-packages/torch/optim/_functional.py", line 84, in adam
+    exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+KeyboardInterrupt
